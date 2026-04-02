@@ -89,6 +89,40 @@ export class PromptBuilder {
   }
 
   /**
+   * Conditionally include a block of prompt content.
+   * The builder callback only runs when the condition is truthy.
+   * The condition value is passed into the callback with its type narrowed,
+   * so you get type-safe access without extra null checks.
+   *
+   * @example
+   * ```typescript
+   * prompt()
+   *   .role('frontend designer')
+   *   .conditional(enrichment.designSystem, (b, ds) => b
+   *     .heading('Design System', 2)
+   *     .section('Primary Color', ds.themeColor)
+   *     .section('Primary Font', ds.typography?.primaryFont)
+   *     .list('Colors', ds.colors?.map(c => `${c.name}: ${c.value}`))
+   *   )
+   *   .conditional(enrichment.features?.length, () => prompt()
+   *     .heading('Features', 2)
+   *     .list(enrichment.features!)
+   *   )
+   *   .build()
+   * ```
+   */
+  conditional<T>(
+    condition: T | null | undefined | false | 0 | '',
+    builder: (b: PromptBuilder, value: NonNullable<T>) => PromptBuilder,
+  ): this {
+    if (condition) {
+      const sub = builder(new PromptBuilder(), condition as NonNullable<T>)
+      this.parts.push(sub.build())
+    }
+    return this
+  }
+
+  /**
    * Add a bullet list. Title is optional — omit for a bare list.
    */
   list(titleOrItems: string | string[] | undefined | null, items?: string[] | undefined | null): this {
