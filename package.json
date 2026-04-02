@@ -22,6 +22,7 @@
     "dev": "tsup --watch",
     "type-check": "tsc --noEmit",
     "test": "vitest run",
+    "prepare": "tsup",
     "prepublishOnly": "pnpm build"
   },
   "keywords": [
