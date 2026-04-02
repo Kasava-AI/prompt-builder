@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>@kasava/prompt-builder</strong>
+  <img src="./promptbuilder_dark.png" alt="PromptBuilder" width="400">
 </p>
 
 <p align="center">
