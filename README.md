@@ -144,7 +144,6 @@ const systemPrompt = prompt()
 | `.heading(text, level?)` | Markdown heading (h1-h3) |
 | `.raw(content)` | Raw text |
 | `.section(title, content)` | Bold title with content (skipped if null) |
-| `.sectionIf(cond, title, content)` | Conditional section |
 | `.field(label, value)` | Bold label with value (skipped if null) |
 | `.booleanField(label, value)` | Yes/No field |
 | `.separator()` | Horizontal rule |

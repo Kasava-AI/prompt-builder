@@ -81,13 +81,6 @@ export class PromptBuilder {
     return this
   }
 
-  sectionIf(condition: boolean, title: string, content: string): this {
-    if (condition) {
-      this.section(title, content)
-    }
-    return this
-  }
-
   /**
    * Conditionally include a block of prompt content.
    * The builder callback only runs when the condition is truthy.
