@@ -1,5 +1,6 @@
 <p align="center">
-  <img src="./promptbuilder_dark.png" alt="PromptBuilder" width="400">
+  <img src="./promptbuilder_dark.png#gh-light-mode-only" alt="PromptBuilder" width="400">
+  <img src="./promptbuilder_light.png#gh-dark-mode-only" alt="PromptBuilder" width="400">
 </p>
 
 <p align="center">
