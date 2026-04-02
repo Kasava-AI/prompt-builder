@@ -1,0 +1,50 @@
+{
+  "name": "@kasava/prompt-builder",
+  "version": "0.1.0",
+  "description": "Fluent prompt builder for LLM agents. Composable sections, XML tags, protocols, lookup tables, and consistent markdown formatting.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "pnpm build"
+  },
+  "keywords": [
+    "prompt",
+    "llm",
+    "ai",
+    "builder",
+    "fluent",
+    "anthropic",
+    "claude",
+    "openai",
+    "prompt-engineering"
+  ],
+  "author": "Kasava <hello@kasava.dev>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kasava-ai/prompt-builder"
+  },
+  "homepage": "https://github.com/kasava-ai/prompt-builder#readme",
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
