@@ -115,6 +115,18 @@ describe('indentation', () => {
     expect(p`  spaced  `.toString()).toBe('  spaced  ')
   })
 
+  it('counts an interpolation-only line toward the common indent', () => {
+    // The line holding ${x} is the least-indented, so it sets the common indent.
+    // Only works if the sentinel standing in for the value survives trim() —
+    // a whitespace sentinel would make the line read as blank and be skipped.
+    const x = 'value'
+    const frag = p`
+      deeply indented line
+  ${x}
+    `
+    expect(frag.toString()).toBe('    deeply indented line\nvalue')
+  })
+
   it('does not reindent interpolated multi-line values', () => {
     const block = 'line1\nline2'
     const frag = p`
