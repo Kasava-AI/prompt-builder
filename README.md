@@ -290,10 +290,26 @@ Prompt Builder was extracted from [Kasava's](https://kasava.dev) internal AI pla
 ## Contributing
 
 ```bash
-pnpm install       # Install dependencies
-pnpm test          # Run tests
-pnpm build         # Build package
-pnpm type-check    # Type check
+pnpm install        # Install dependencies
+pnpm test           # Run the test suite
+pnpm test:watch     # Watch mode
+pnpm test:coverage  # Coverage (thresholds are set to 100%)
+pnpm test:types     # Type-level assertions (*.test-d.ts)
+pnpm type-check     # tsc over src + test
+pnpm build          # Build package
+```
+
+### The consumer baseline
+
+`test/integration/consumer-baseline.test.ts` loads real prompt modules from
+sibling checkouts (`../monroe`, `../kasava`) and asserts they still build
+byte-identically against a committed baseline. It skips cleanly when those
+repos aren't present.
+
+After an intentional formatting change, regenerate and **read the diff**:
+
+```bash
+pnpm test:baseline
 ```
 
 ---

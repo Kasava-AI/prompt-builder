@@ -1,11 +1,18 @@
 /**
- * Fluent prompt builder for Mastra agents
+ * Fluent prompt builder for LLM agents
  *
  * Provides consistent prompt formatting with optional sections,
  * context blocks, proper markdown formatting, and high-level
  * section generators for common prompt patterns (protocols,
  * arrow rules, lookup tables).
+ *
+ * As of 0.3.0 the builder emits an AST (see ./ast.ts) rather than
+ * pre-formatted strings, and a Dialect serializes it. The public API is
+ * unchanged; `build()` renders with the markdown dialect by default.
  */
+
+import { render, type Dialect, type Node } from './ast'
+import { markdown, renderExampleBlock } from './dialects/markdown'
 
 // ─── Types for section generators ──────────────────────────────────────────────
 
@@ -46,6 +53,30 @@ export interface WorkedExample {
   response: string
 }
 
+/** The result of inspecting a prompt without building it. */
+export interface PromptQuery {
+  /** The rendered prompt text. */
+  text: string
+  /** Bound parameter values. Always empty until prepared prompts land in 0.3.0-beta. */
+  params: unknown[]
+  /** Which dialect produced `text`. */
+  dialect: string
+}
+
+// ─── Legacy rendering helpers ─────────────────────────────────────────────────
+
+/**
+ * The pre-0.3.0 table rendering: cells interpolated raw, no escaping.
+ *
+ * Recorded as a node's `legacy` value so `markdown({ strict: true })` can
+ * reproduce it. Not used for normal output.
+ */
+function legacyTable(columns: string[], rows: string[][]): string {
+  const header = `| ${columns.join(' | ')} |`
+  const divider = `|${columns.map(() => '---').join('|')}|`
+  return [header, divider, ...rows.map((r) => `| ${r.join(' | ')} |`)].join('\n')
+}
+
 /**
  * Fluent builder for constructing agent prompts with consistent formatting.
  * Handles optional sections, context blocks, and proper markdown formatting.
@@ -63,20 +94,32 @@ export interface WorkedExample {
  * ```
  */
 export class PromptBuilder {
-  private parts: string[] = []
+  /**
+   * The prompt AST.
+   *
+   * Mutable and mutated in place — `include()` and `conditional()` splice a
+   * child's nodes in here. Consumers depend on this: real code calls
+   * `b.conditional(...)` as a bare statement and discards the return value, so
+   * making the builder persistent would silently drop sections.
+   */
+  private nodes: Node[] = []
+
+  private push(node: Node): this {
+    this.nodes.push(node)
+    return this
+  }
 
   // ============================================
   // Core formatting methods
   // ============================================
 
   heading(text: string, level: 1 | 2 | 3 = 2): this {
-    this.parts.push(`${'#'.repeat(level)} ${text}`)
-    return this
+    return this.push({ kind: 'heading', level, text })
   }
 
   section(title: string, content: string | undefined | null): this {
     if (content) {
-      this.parts.push(`**${title}:** ${content}`)
+      this.push({ kind: 'field', label: title, value: content, style: 'section' })
     }
     return this
   }
@@ -110,43 +153,60 @@ export class PromptBuilder {
   ): this {
     if (condition) {
       const sub = builder(new PromptBuilder(), condition as NonNullable<T>)
-      this.parts.push(sub.build())
+      this.absorb(sub)
     }
     return this
+  }
+
+  /**
+   * Splice another builder's nodes into this one.
+   *
+   * v0.2.2 collapsed the child to a single pre-joined string. Splicing produces
+   * identical output — both levels join with a blank line — while keeping the
+   * AST walkable, which token budgeting and cache breakpoints need. The one
+   * difference is an empty child, which used to leave a stray blank line
+   * (§6 row 9).
+   */
+  private absorb(other: PromptBuilder): void {
+    if (other.nodes.length === 0) {
+      this.nodes.push({ kind: 'empty', legacy: '' })
+      return
+    }
+    this.nodes.push(...other.nodes)
   }
 
   /**
    * Add a bullet list. Title is optional — omit for a bare list.
    */
   list(titleOrItems: string | string[] | undefined | null, items?: string[] | undefined | null): this {
-    // list(['a', 'b']) — titleless
-    if (Array.isArray(titleOrItems)) {
-      if (titleOrItems.length > 0) {
-        this.parts.push(titleOrItems.map((item) => `- ${item}`).join('\n'))
-      }
-      return this
-    }
-    // list('Title', ['a', 'b']) — with title
-    if (titleOrItems && items && items.length > 0) {
-      this.parts.push(`**${titleOrItems}:**\n${items.map((item) => `- ${item}`).join('\n')}`)
-    }
-    return this
+    return this.pushList(false, titleOrItems, items)
   }
 
   /**
    * Add a numbered list. Title is optional — omit for a bare list.
    */
-  numberedList(titleOrItems: string | string[] | undefined | null, items?: string[] | undefined | null): this {
-    // numberedList(['a', 'b']) — titleless
+  numberedList(
+    titleOrItems: string | string[] | undefined | null,
+    items?: string[] | undefined | null,
+  ): this {
+    return this.pushList(true, titleOrItems, items)
+  }
+
+  private pushList(
+    ordered: boolean,
+    titleOrItems: string | string[] | undefined | null,
+    items?: string[] | undefined | null,
+  ): this {
+    // list(['a', 'b']) — titleless
     if (Array.isArray(titleOrItems)) {
       if (titleOrItems.length > 0) {
-        this.parts.push(titleOrItems.map((item, i) => `${i + 1}. ${item}`).join('\n'))
+        this.push({ kind: 'list', ordered, items: titleOrItems })
       }
       return this
     }
-    // numberedList('Title', ['a', 'b']) — with title
+    // list('Title', ['a', 'b']) — with title
     if (titleOrItems && items && items.length > 0) {
-      this.parts.push(`**${titleOrItems}:**\n${items.map((item, i) => `${i + 1}. ${item}`).join('\n')}`)
+      this.push({ kind: 'list', ordered, title: titleOrItems, items })
     }
     return this
   }
@@ -165,6 +225,9 @@ export class PromptBuilder {
    * Add a markdown table with any number of columns.
    * Skipped if rows is empty.
    *
+   * Cell contents are escaped, so a `|` or newline in a cell can no longer
+   * break the table.
+   *
    * @example
    * ```typescript
    * prompt()
@@ -180,25 +243,19 @@ export class PromptBuilder {
    */
   table(columns: string[], rows: string[][]): this {
     if (rows.length === 0) return this
-    const header = `| ${columns.join(' | ')} |`
-    const divider = `|${columns.map(() => '---').join('|')}|`
-    const body = rows.map((r) => `| ${r.join(' | ')} |`).join('\n')
-    this.parts.push([header, divider, body].join('\n'))
-    return this
+    return this.push({ kind: 'table', columns, rows, legacy: legacyTable(columns, rows) })
   }
 
   codeBlock(content: string, language = ''): this {
-    this.parts.push(`\`\`\`${language}\n${content}\n\`\`\``)
-    return this
+    return this.push({ kind: 'code', language, content })
   }
 
   raw(content: string): this {
-    this.parts.push(content)
-    return this
+    return this.push({ kind: 'text', text: content })
   }
 
   /**
-   * @deprecated No-op. build() now joins parts with \n\n (paragraph breaks).
+   * @deprecated No-op. build() joins parts with \n\n (paragraph breaks).
    * Kept for backward compatibility — safe to remove from call sites.
    */
   newline(): this {
@@ -206,22 +263,21 @@ export class PromptBuilder {
   }
 
   /**
-   * @deprecated No-op. build() now joins parts with \n\n (paragraph breaks).
+   * @deprecated No-op. build() joins parts with \n\n (paragraph breaks).
    */
   paragraph(): this {
     return this
   }
 
   /**
-   * @deprecated No-op. build() now joins parts with \n\n (paragraph breaks).
+   * @deprecated No-op. build() joins parts with \n\n (paragraph breaks).
    */
   blankLine(): this {
     return this
   }
 
   separator(): this {
-    this.parts.push('\n---\n')
-    return this
+    return this.push({ kind: 'rule', style: 'dash', legacy: '\n---\n' })
   }
 
   /**
@@ -229,13 +285,7 @@ export class PromptBuilder {
    * @param style - 'dash' (---), 'hash' (###), or 'quote' (""")
    */
   delimiter(style: 'dash' | 'hash' | 'quote' = 'dash'): this {
-    const delimiters = {
-      dash: '---',
-      hash: '###',
-      quote: '"""',
-    }
-    this.parts.push(delimiters[style])
-    return this
+    return this.push({ kind: 'rule', style })
   }
 
   // ============================================
@@ -248,24 +298,21 @@ export class PromptBuilder {
    * @param content - Content to wrap
    */
   tag(name: string, content: string): this {
-    this.parts.push(`<${name}>\n${content}\n</${name}>`)
-    return this
+    return this.push({ kind: 'tag', name, content })
   }
 
   /**
    * Open an XML tag (use with closeTag for multi-step content building)
    */
   openTag(name: string): this {
-    this.parts.push(`<${name}>`)
-    return this
+    return this.push({ kind: 'tagOpen', name })
   }
 
   /**
    * Close an XML tag
    */
   closeTag(name: string): this {
-    this.parts.push(`</${name}>`)
-    return this
+    return this.push({ kind: 'tagClose', name })
   }
 
   // ============================================
@@ -336,7 +383,7 @@ export class PromptBuilder {
    */
   field(label: string, value: string | number | boolean | null | undefined): this {
     if (value !== null && value !== undefined) {
-      this.parts.push(`**${label}**: ${value}`)
+      this.pushField(label, String(value))
     }
     return this
   }
@@ -345,8 +392,7 @@ export class PromptBuilder {
    * Add a Yes/No boolean field
    */
   booleanField(label: string, value: boolean): this {
-    this.parts.push(`**${label}**: ${value ? 'Yes' : 'No'}`)
-    return this
+    return this.pushField(label, value ? 'Yes' : 'No')
   }
 
   /**
@@ -354,8 +400,24 @@ export class PromptBuilder {
    */
   inlineList(label: string, items: string[] | undefined | null, fallback = 'None'): this {
     const content = items && items.length > 0 ? items.join(', ') : fallback
-    this.parts.push(`**${label}**: ${content}`)
-    return this
+    return this.pushField(label, content)
+  }
+
+  /**
+   * A `field`-style label/value pair.
+   *
+   * v0.2.2 rendered these as `**Label**: value` while `section()` used
+   * `**Label:** value`. 0.3.0 unifies both on the `section()` form, so the old
+   * rendering is recorded for strict mode (§6 row 4).
+   */
+  private pushField(label: string, value: string): this {
+    return this.push({
+      kind: 'field',
+      label,
+      value,
+      style: 'field',
+      legacy: `**${label}**: ${value}`,
+    })
   }
 
   // ============================================
@@ -379,17 +441,25 @@ export class PromptBuilder {
     files: { filename: string; status?: string; additions?: number; deletions?: number }[]
   ): this {
     if (files && files.length > 0) {
-      this.parts.push(`## ${title} (${files.length} files)`)
-      const list = files
-        .map((f) => {
-          let line = `- ${f.filename}`
+      const count = files.length
+      this.push({
+        kind: 'heading',
+        level: 2,
+        // v0.2.2 said "1 files" (§6 row 7).
+        text: `${title} (${count} ${count === 1 ? 'file' : 'files'})`,
+        legacy: `## ${title} (${count} files)`,
+      })
+      this.push({
+        kind: 'list',
+        ordered: false,
+        items: files.map((f) => {
+          let line = f.filename
           if (f.status) line += ` (${f.status})`
           if (f.additions) line += ` +${f.additions}`
           if (f.deletions) line += ` -${f.deletions}`
           return line
-        })
-        .join('\n')
-      this.parts.push(list)
+        }),
+      })
     }
     return this
   }
@@ -402,9 +472,10 @@ export class PromptBuilder {
    * Format key-value pairs as a bulleted list
    */
   keyValues(pairs: Record<string, string | number>): this {
-    const items = Object.entries(pairs).map(([key, value]) => `- ${key}: ${value}`)
-    this.parts.push(items.join('\n'))
-    return this
+    const items = Object.entries(pairs).map(([key, value]) => `${key}: ${value}`)
+    // v0.2.2 pushed an empty part for an empty record (§6 row 2).
+    if (items.length === 0) return this.push({ kind: 'empty', legacy: '' })
+    return this.push({ kind: 'list', ordered: false, items })
   }
 
   /**
@@ -421,8 +492,9 @@ export class PromptBuilder {
       const msg = overflowMessage ? overflowMessage(remaining) : `... and ${remaining} more`
       shown.push(msg)
     }
-    this.parts.push(shown.map((item) => `- ${item}`).join('\n'))
-    return this
+    // v0.2.2 pushed an empty part for an empty list (§6 row 2).
+    if (shown.length === 0) return this.push({ kind: 'empty', legacy: '' })
+    return this.push({ kind: 'list', ordered: false, items: shown })
   }
 
   /**
@@ -454,9 +526,12 @@ export class PromptBuilder {
   ): this {
     this.heading('Analysis Requirements', 2)
     this.raw(description)
-    this.parts.push(requirements.map((r, i) => `${i + 1}. ${r}`).join('\n'))
+    if (requirements.length === 0) {
+      this.push({ kind: 'empty', legacy: '' })
+    } else {
+      this.push({ kind: 'list', ordered: true, items: requirements })
+    }
     if (jsonStructure) {
-      this.newline()
       this.raw('Format your response as JSON with the following structure:')
       this.codeBlock(JSON.stringify(jsonStructure, null, 2), 'json')
     }
@@ -521,14 +596,12 @@ export class PromptBuilder {
     }
 
     for (const step of opts.steps) {
-      const stepParts = [`**${step.label}**`]
-      if (step.description) {
-        stepParts.push(step.description)
-      }
-      if (step.actions && step.actions.length > 0) {
-        stepParts.push(step.actions.map((a, i) => `(${i + 1}) ${a}`).join('\n'))
-      }
-      this.parts.push(stepParts.join('\n'))
+      this.push({
+        kind: 'step',
+        label: step.label,
+        description: step.description,
+        actions: step.actions,
+      })
     }
 
     if (opts.outputFormat) {
@@ -583,16 +656,16 @@ export class PromptBuilder {
     }
 
     for (const type of opts.types) {
-      const label = type.description
-        ? `**${type.name}** — ${type.description}`
-        : `**${type.name}**`
-      this.parts.push(`${label}\n${type.rules.map((r) => `→ ${r}`).join('\n')}`)
+      this.push({
+        kind: 'arrows',
+        label: type.name,
+        description: type.description,
+        rules: type.rules,
+      })
     }
 
     if (opts.postRules && opts.postRules.length > 0) {
-      this.parts.push(
-        opts.postRules.map((r, i) => `${i + 1}. ${r}`).join('\n')
-      )
+      this.push({ kind: 'list', ordered: true, items: opts.postRules })
     }
 
     return this
@@ -641,10 +714,14 @@ export class PromptBuilder {
       this.raw(opts.description)
     }
 
-    const header = `| ${opts.columns[0]} | ${opts.columns[1]} |`
-    const divider = '|---|---|'
-    const tableRows = opts.rows.map((r) => `| ${r[0]} | ${r[1]} |`)
-    this.parts.push([header, divider, ...tableRows].join('\n'))
+    const rows = opts.rows.map((r) => [r[0], r[1]])
+    this.push({
+      kind: 'table',
+      columns: [opts.columns[0], opts.columns[1]],
+      rows,
+      // v0.2.2 emitted a header-only table when there were no rows (§6 row 8).
+      legacy: legacyTable([opts.columns[0], opts.columns[1]], rows),
+    })
 
     if (opts.postNote) {
       this.raw(opts.postNote)
@@ -701,9 +778,9 @@ export class PromptBuilder {
    */
   include(other: PromptBuilder | string): this {
     if (typeof other === 'string') {
-      this.parts.push(other)
+      this.raw(other)
     } else {
-      this.parts.push(other.build())
+      this.absorb(other)
     }
     return this
   }
@@ -728,8 +805,7 @@ export class PromptBuilder {
     const sentence = task
       ? `You are ${article} ${title} ${task}.`
       : `You are ${article} ${title}.`
-    this.parts.push(sentence)
-    return this
+    return this.raw(sentence)
   }
 
   /**
@@ -771,8 +847,15 @@ export class PromptBuilder {
     levels: { level: string; description: string }[]
   ): this {
     this.heading(title, 3)
-    for (const { level, description } of levels) {
-      this.raw(`- **${level}**: ${description}`)
+    if (levels.length > 0) {
+      this.push({
+        kind: 'list',
+        ordered: false,
+        items: levels.map(({ level, description }) => `**${level}**: ${description}`),
+        // v0.2.2 pushed each level as its own part, so the bullets rendered with
+        // blank lines between them (§6 row 6).
+        legacy: levels.map(({ level, description }) => `- **${level}**: ${description}`).join('\n\n'),
+      })
     }
     return this
   }
@@ -939,26 +1022,14 @@ export class PromptBuilder {
    * ```
    */
   workedExample(example: WorkedExample): this {
-    const toolCallsFormatted = example.toolCalls
-      .map((tc, i) => `${i + 1}. ${tc}`)
-      .join('\n')
-
-    const xml = [
-      '<example>',
-      `<context>${example.context}</context>`,
-      `<mention>${example.mention}</mention>`,
-      `<protocol>${example.protocol}</protocol>`,
-      '<tool_calls>',
-      toolCallsFormatted,
-      '</tool_calls>',
-      '<ideal_response>',
-      example.response,
-      '</ideal_response>',
-      '</example>',
-    ].join('\n')
-
-    this.parts.push(xml)
-    return this
+    return this.push({
+      kind: 'example',
+      context: example.context,
+      mention: example.mention,
+      protocol: example.protocol,
+      toolCalls: example.toolCalls,
+      response: example.response,
+    })
   }
 
   /**
@@ -977,20 +1048,54 @@ export class PromptBuilder {
    */
   workedExamples(examples: WorkedExample[], title = 'Worked Examples'): this {
     this.heading(title, 2)
-    this.parts.push('<examples>')
-    for (const ex of examples) {
-      this.workedExample(ex)
-    }
-    this.parts.push('</examples>')
-    return this
+    const blocks = examples.map((ex) => ({
+      context: ex.context,
+      mention: ex.mention,
+      protocol: ex.protocol,
+      toolCalls: ex.toolCalls,
+      response: ex.response,
+    }))
+    return this.push({
+      kind: 'examples',
+      examples: blocks,
+      // v0.2.2 pushed the wrapper tags and each example as separate parts, so
+      // blank lines appeared inside the XML (§6 row 5).
+      legacy: ['<examples>', ...blocks.map(renderExampleBlock), '</examples>'].join('\n\n'),
+    })
   }
 
   // ============================================
-  // Build
+  // Build & inspect
   // ============================================
 
-  build(): string {
-    return this.parts.join('\n\n')
+  /**
+   * Render the prompt.
+   *
+   * @param dialect - Serializer to use. Defaults to markdown. Pass
+   *   `markdown({ strict: true })` to reproduce pre-0.3.0 output byte for byte.
+   */
+  build(dialect: Dialect = markdown()): string {
+    return render(this.nodes, dialect)
+  }
+
+  /**
+   * The prompt's AST, for token counting, linting, diffing, and budget trimming.
+   *
+   * Returns a shallow copy — mutating the result does not affect the builder.
+   */
+  toAST(): Node[] {
+    return [...this.nodes]
+  }
+
+  /**
+   * Inspect the compiled prompt without committing to a string, mirroring
+   * Drizzle's `.toSQL()`.
+   *
+   * `params` is always empty until prepared prompts land; the shape is fixed
+   * now so callers don't have to change later.
+   */
+  toPrompt(dialect: Dialect = markdown()): PromptQuery {
+    return { text: render(this.nodes, dialect), params: [], dialect: dialect.name }
   }
 }
 

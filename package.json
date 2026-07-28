@@ -1,6 +1,6 @@
 {
   "name": "@kasava/prompt-builder",
-  "version": "0.2.2",
+  "version": "0.3.0-alpha.0",
   "description": "Fluent prompt builder for LLM agents. Composable sections, XML tags, protocols, lookup tables, and consistent markdown formatting.",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,8 +21,12 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "type-check": "tsc --noEmit",
+    "type-check": "tsc -p tsconfig.test.json",
     "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:types": "vitest --typecheck.only run",
+    "test:baseline": "UPDATE_CONSUMER_BASELINE=1 vitest run test/integration/consumer-baseline.test.ts",
     "prepare": "tsup",
     "prepublishOnly": "pnpm build"
   },
@@ -45,6 +49,8 @@
   },
   "homepage": "https://github.com/kasava-ai/prompt-builder#readme",
   "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@vitest/coverage-v8": "^3.2.7",
     "tsup": "^8.0.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
