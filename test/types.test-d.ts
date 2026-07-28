@@ -7,6 +7,12 @@ import {
   type ProtocolStep,
   type TableRow,
   type WorkedExample,
+  definePrompt,
+  text,
+  num,
+  bool,
+  list,
+  json,
 } from '../src/index'
 
 /**
@@ -111,6 +117,54 @@ describe('statics', () => {
 
   it('formatLimitedList is generic over the item type', () => {
     expectTypeOf(PromptBuilder.formatLimitedList([1, 2], (n) => `${n}`, 1)).toEqualTypeOf<string[]>()
+  })
+})
+
+describe('InferVars — required vs optional', () => {
+  const schema = definePrompt('t', {
+    required: text().notNull(),
+    withDefault: num().default(0),
+    requiredWithDefault: text().notNull().default('x'),
+    plain: bool(),
+    structured: json<{ id: string }>().notNull(),
+  })
+
+  type Vars = typeof schema.$inferVars
+
+  it('marks .notNull() with no default as required', () => {
+    expectTypeOf<Vars>().toHaveProperty('required').toEqualTypeOf<string>()
+    expectTypeOf<Vars>().toHaveProperty('structured').toEqualTypeOf<{ id: string }>()
+  })
+
+  it('marks a defaulted variable optional even when notNull', () => {
+    expectTypeOf<Vars>().toHaveProperty('withDefault').toEqualTypeOf<number | undefined>()
+    expectTypeOf<Vars>().toHaveProperty('requiredWithDefault').toEqualTypeOf<string | undefined>()
+  })
+
+  it('marks a plain variable optional', () => {
+    expectTypeOf<Vars>().toHaveProperty('plain').toEqualTypeOf<boolean | undefined>()
+  })
+
+  it('rejects a payload missing a required variable', () => {
+    const template = schema.body(() => prompt())
+    // @ts-expect-error `required` and `structured` are missing
+    expectTypeOf(template.render).toBeCallableWith({})
+    expectTypeOf(template.render).toBeCallableWith({ required: 'a', structured: { id: 'b' } })
+  })
+
+  it('gives the body callback defined values for required and defaulted vars', () => {
+    schema.body((v) => {
+      expectTypeOf(v.required).toEqualTypeOf<string>()
+      expectTypeOf(v.withDefault).toEqualTypeOf<number>()
+      expectTypeOf(v.plain).toEqualTypeOf<boolean | undefined>()
+      return prompt()
+    })
+  })
+
+  it('carries list() and json() element types', () => {
+    const s = definePrompt('l', { xs: list().notNull(), obj: json<{ n: number }>().notNull() })
+    expectTypeOf<typeof s.$inferVars>().toHaveProperty('xs').toEqualTypeOf<string[]>()
+    expectTypeOf<typeof s.$inferVars>().toHaveProperty('obj').toEqualTypeOf<{ n: number }>()
   })
 })
 

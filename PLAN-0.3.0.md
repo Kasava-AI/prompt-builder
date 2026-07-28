@@ -475,15 +475,45 @@ Of the 42 test diffs this phase produced, every one mapped to a numbered §6 row
 snapshots that moved differed *only* in field-colon placement (row 4) — structure, headings, and
 lists were untouched.
 
-### Phase 2 — Schema, template tag, combinators (`0.3.0-beta`)
+### Phase 2 — Schema, template tag, combinators ✅ COMPLETE (`0.3.0-beta.0`)
 
-- `definePrompt`, var builders, `$inferVars`
-- the `p` tag with escaping + placeholders
-- `when` / `unless` / `all` / `any` / `each`, `.$dynamic()`
-- `.prepare()` / `.render()`
-- `xml()` and `messages()` dialects, cache breakpoints
-- **Exit criteria:** `dynamic.ts` in Monroe rewritten on the new API as the proving ground —
-  it's the file that currently can't use the library at all.
+**400 runtime tests + 25 type tests. 100% coverage across all eight source files.**
+
+| Deliverable | Where |
+|---|---|
+| `p` tag, `Fragment`, `p.raw/join/empty`, `placeholder()` | `src/template.ts` |
+| `when` / `unless` / `all` / `any` / `each` | `src/combinators.ts` |
+| `definePrompt`, var builders, `$inferVars`, `.body()`, `.render()` | `src/schema.ts` |
+| `.prepare()` → `PreparedPrompt.render()` | `src/prepared.ts` |
+| `xml()` dialect; `toMessages()` + `.cacheBoundary()` | `src/dialects/{xml,messages}.ts` |
+| `.$dynamic()`, `.params()`, `resolve()` | `src/prompt-builder.ts`, `src/ast.ts` |
+
+**Exit criterion met.** `test/integration/monroe-dynamic-port.test.ts` holds both the original
+hand-rolled `dynamic.ts` and its port onto `definePrompt` + `p` + `when`/`all`, and asserts they
+are **byte-identical across all 7 input shapes**. Monroe itself is untouched — it depends on the
+published `^0.2.1`, so it can only migrate once 0.3.0 ships.
+
+Three things worth recording:
+
+1. **`p` does not escape, and cannot.** Drizzle's `sql` tag escapes because SQL has a grammar to
+   break out of; natural language does not, so no amount of escaping makes untrusted text safe to
+   interpolate into a prompt. `p` provides composition and consistent value serialization —
+   arrays comma-join, objects JSON-serialize, nullish becomes empty — and the docs say plainly
+   that it is not an injection defense. Claiming otherwise would be the most dangerous thing in
+   this release.
+2. **Dedent has to run before interpolation.** Once values are interleaved they are
+   indistinguishable from literal template text, so a multi-line interpolated value both skewed
+   the computed indent and got reindented itself. Caught by a test, fixed by operating on the
+   template strings.
+3. **Two unused `@ts-expect-error` directives caught a real inference bug.** `VarConfig` declared
+   its flags as `boolean`, which widened `.notNull()`'s literal `true` and made every variable
+   optional in the render payload — `render({})` type-checked with a required variable missing.
+   The flags are now literal type parameters on `Var<T, R, D>`, and `types.test-d.ts` pins the
+   required/optional split so it cannot regress silently.
+
+One asymmetry to know about: `include()` of an empty builder still leaves an `empty` marker node
+so strict mode can reproduce §6 row 9, but the combinators drop empty results outright — they are
+new API with no legacy to preserve, and a clean AST matters more for walking and budgeting.
 
 ### Phase 3 — Ecosystem (`0.3.0`)
 

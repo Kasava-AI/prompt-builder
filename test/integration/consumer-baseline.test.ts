@@ -120,7 +120,9 @@ beforeAll(async () => {
     mkdirSync(BASELINE_DIR, { recursive: true })
     writeFileSync(BASELINE_FILE, JSON.stringify(captured, null, 2) + '\n')
   }
-})
+  // Transpiling and importing ~49 modules from other repos overruns the default
+  // 5s hook timeout when this file competes with the rest of the suite.
+}, 120_000)
 
 const hasBaseline = existsSync(BASELINE_FILE)
 

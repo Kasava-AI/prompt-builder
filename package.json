@@ -1,6 +1,6 @@
 {
   "name": "@kasava/prompt-builder",
-  "version": "0.3.0-alpha.0",
+  "version": "0.3.0-beta.0",
   "description": "Fluent prompt builder for LLM agents. Composable sections, XML tags, protocols, lookup tables, and consistent markdown formatting.",
   "type": "module",
   "main": "./dist/index.js",

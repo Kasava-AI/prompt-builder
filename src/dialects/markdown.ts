@@ -127,6 +127,14 @@ function renderCorrected(node: Node): string | null {
       // Tight, with no blank lines between the wrapper and its children (§6 row 5).
       return ['<examples>', ...node.examples.map(renderExampleBlock), '</examples>'].join('\n')
 
+    case 'template':
+      // resolve() replaces these with text nodes before rendering. Reaching one
+      // here means an unbound slot survived, so fall back to its literal parts
+      // rather than silently dropping content.
+      return node.chunks.map((c) => (typeof c === 'string' ? c : `{{${c.name}}}`)).join('')
+
+    // Structural markers with no text of their own.
+    case 'cacheBoundary':
     case 'empty':
       return null
   }

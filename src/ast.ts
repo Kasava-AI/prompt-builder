@@ -132,6 +132,37 @@ export interface ExamplesNode extends NodeBase {
   examples: Omit<ExampleNode, 'kind' | 'legacy'>[]
 }
 
+/** A named slot filled at render time. The `sql.placeholder()` analogue. */
+export interface Placeholder {
+  readonly _kind: 'placeholder'
+  readonly name: string
+}
+
+/** One piece of a template: literal text, or a slot awaiting a value. */
+export type Chunk = string | Placeholder
+
+/**
+ * Interpolated prose from the `p` tag.
+ *
+ * Stays unresolved in the AST so a prompt can be built once at module load and
+ * rendered many times with different values — the prepared-statement model.
+ * `resolve()` turns it into a plain TextNode.
+ */
+export interface TemplateNode extends NodeBase {
+  kind: 'template'
+  chunks: Chunk[]
+}
+
+/**
+ * A boundary between cache-stable and per-request content.
+ *
+ * Invisible to text dialects. The messages dialect splits on it and marks the
+ * preceding block for provider-side prompt caching.
+ */
+export interface CacheBoundaryNode extends NodeBase {
+  kind: 'cacheBoundary'
+}
+
 /**
  * A node that renders to nothing.
  *
@@ -159,9 +190,75 @@ export type Node =
   | ArrowsNode
   | ExampleNode
   | ExamplesNode
+  | TemplateNode
+  | CacheBoundaryNode
   | EmptyNode
 
 export type NodeKind = Node['kind']
+
+/** Thrown when a prompt is rendered without a value for one of its slots. */
+export class MissingParamError extends Error {
+  constructor(readonly param: string) {
+    super(
+      `No value for placeholder "${param}". Pass it to .render({ ${param}: ... }), ` +
+        `or give the variable a .default() in its schema.`,
+    )
+    this.name = 'MissingParamError'
+  }
+}
+
+function isPlaceholder(chunk: Chunk): chunk is Placeholder {
+  return typeof chunk !== 'string'
+}
+
+/**
+ * Bind values into a prompt's slots, producing an AST with no unresolved
+ * templates left.
+ *
+ * Kept separate from rendering so dialects never have to know about parameters:
+ * resolve first, then serialize.
+ */
+export function resolve(nodes: readonly Node[], params: Record<string, unknown> = {}): Node[] {
+  return nodes.map((node) => {
+    if (node.kind !== 'template') return node
+    const text = node.chunks
+      .map((chunk) => {
+        if (!isPlaceholder(chunk)) return chunk
+        if (!(chunk.name in params)) throw new MissingParamError(chunk.name)
+        return formatValue(params[chunk.name])
+      })
+      .join('')
+    return { kind: 'text', text }
+  })
+}
+
+/**
+ * Turn an interpolated value into prompt text.
+ *
+ * Note this is serialization, NOT escaping. Drizzle's `sql` tag escapes to
+ * prevent injection because SQL has a grammar to break out of; natural language
+ * does not, so no amount of escaping makes untrusted text safe to interpolate
+ * into a prompt. Treat interpolated data as data — see the delimiting and
+ * instruction-hierarchy guidance in your model provider's docs.
+ */
+export function formatValue(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (Array.isArray(value)) return value.map(formatValue).join(', ')
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+/** Every placeholder name a prompt still expects, in first-seen order. */
+export function paramNames(nodes: readonly Node[]): string[] {
+  const seen = new Set<string>()
+  for (const node of nodes) {
+    if (node.kind !== 'template') continue
+    for (const chunk of node.chunks) {
+      if (isPlaceholder(chunk)) seen.add(chunk.name)
+    }
+  }
+  return [...seen]
+}
 
 /**
  * Serializes an AST. One AST, many output formats.

@@ -11,8 +11,17 @@
  * unchanged; `build()` renders with the markdown dialect by default.
  */
 
-import { render, type Dialect, type Node } from './ast'
+import { render, resolve, paramNames, type Dialect, type Node } from './ast'
 import { markdown, renderExampleBlock } from './dialects/markdown'
+import { Fragment } from './template'
+import { PreparedPrompt } from './prepared'
+
+/** Content accepted anywhere the builder takes prose. */
+export type Content = string | Fragment
+
+function contentToString(content: Content): string {
+  return typeof content === 'string' ? content : content.toString()
+}
 
 // ─── Types for section generators ──────────────────────────────────────────────
 
@@ -57,8 +66,8 @@ export interface WorkedExample {
 export interface PromptQuery {
   /** The rendered prompt text. */
   text: string
-  /** Bound parameter values. Always empty until prepared prompts land in 0.3.0-beta. */
-  params: unknown[]
+  /** Placeholder names the prompt expects. Empty for a fully-resolved prompt. */
+  params: string[]
   /** Which dialect produced `text`. */
   dialect: string
 }
@@ -117,9 +126,14 @@ export class PromptBuilder {
     return this.push({ kind: 'heading', level, text })
   }
 
-  section(title: string, content: string | undefined | null): this {
+  section(title: string, content: Content | undefined | null): this {
     if (content) {
-      this.push({ kind: 'field', label: title, value: content, style: 'section' })
+      this.push({
+        kind: 'field',
+        label: title,
+        value: contentToString(content),
+        style: 'section',
+      })
     }
     return this
   }
@@ -250,7 +264,15 @@ export class PromptBuilder {
     return this.push({ kind: 'code', language, content })
   }
 
-  raw(content: string): this {
+  /**
+   * Add content verbatim.
+   *
+   * Accepts a `p` fragment as well as a string, so interpolated prose can be
+   * dropped in without stringifying it first — and so placeholders survive
+   * until render time.
+   */
+  raw(content: Content): this {
+    if (content instanceof Fragment) return this.push(content.toNode())
     return this.push({ kind: 'text', text: content })
   }
 
@@ -297,8 +319,8 @@ export class PromptBuilder {
    * @param name - Tag name (e.g., 'context', 'instructions')
    * @param content - Content to wrap
    */
-  tag(name: string, content: string): this {
-    return this.push({ kind: 'tag', name, content })
+  tag(name: string, content: Content): this {
+    return this.push({ kind: 'tag', name, content: contentToString(content) })
   }
 
   /**
@@ -320,57 +342,57 @@ export class PromptBuilder {
   // ============================================
 
   /** Wrap content in <instructions> tags */
-  instructions(content: string): this {
+  instructions(content: Content): this {
     return this.tag('instructions', content)
   }
 
   /** Wrap content in <context> tags */
-  context(content: string): this {
+  context(content: Content): this {
     return this.tag('context', content)
   }
 
   /** Wrap content in <example> tags */
-  example(content: string): this {
+  example(content: Content): this {
     return this.tag('example', content)
   }
 
   /** Wrap content in <examples> tags (for multishot prompting) */
-  examples(content: string): this {
+  examples(content: Content): this {
     return this.tag('examples', content)
   }
 
   /** Wrap content in <data> tags */
-  data(content: string): this {
+  data(content: Content): this {
     return this.tag('data', content)
   }
 
   /** Wrap content in <thinking> tags (for chain of thought) */
-  thinking(content: string): this {
+  thinking(content: Content): this {
     return this.tag('thinking', content)
   }
 
   /** Wrap content in <answer> tags (for chain of thought) */
-  answer(content: string): this {
+  answer(content: Content): this {
     return this.tag('answer', content)
   }
 
   /** Wrap content in <formatting> tags */
-  formatting(content: string): this {
+  formatting(content: Content): this {
     return this.tag('formatting', content)
   }
 
   /** Wrap content in <findings> tags */
-  findings(content: string): this {
+  findings(content: Content): this {
     return this.tag('findings', content)
   }
 
   /** Wrap content in <recommendations> tags */
-  recommendations(content: string): this {
+  recommendations(content: Content): this {
     return this.tag('recommendations', content)
   }
 
   /** Wrap content in <output> tags */
-  output(content: string): this {
+  output(content: Content): this {
     return this.tag('output', content)
   }
 
@@ -776,11 +798,11 @@ export class PromptBuilder {
    *   .build()
    * ```
    */
-  include(other: PromptBuilder | string): this {
-    if (typeof other === 'string') {
-      this.raw(other)
-    } else {
+  include(other: PromptBuilder | Fragment | string): this {
+    if (other instanceof PromptBuilder) {
       this.absorb(other)
+    } else {
+      this.raw(other)
     }
     return this
   }
@@ -1069,13 +1091,55 @@ export class PromptBuilder {
   // ============================================
 
   /**
+   * Mark a boundary between cache-stable and per-request content.
+   *
+   * Text dialects ignore it. The messages dialect splits here and marks the
+   * preceding block for provider-side prompt caching, so the pattern that
+   * agent codebases write as a comment — "everything above this line is
+   * cache-eligible, do not interpolate user data into it" — becomes something
+   * the library can actually enforce and emit.
+   *
+   * @example
+   * ```typescript
+   * prompt()
+   *   .include(STATIC_INSTRUCTIONS)
+   *   .cacheBoundary()
+   *   .include(perRequestContext)
+   * ```
+   */
+  cacheBoundary(): this {
+    return this.push({ kind: 'cacheBoundary' })
+  }
+
+  /**
+   * Opt out of chain-shape restrictions so helper functions can extend a
+   * builder, mirroring Drizzle's `.$dynamic()`.
+   *
+   * The builder is mutable, so this is already possible — `$dynamic()` exists to
+   * say so at the call site, and to give helpers a name to accept.
+   *
+   * @example
+   * ```typescript
+   * const withProtocols = (b: DynamicPromptBuilder) => b.include(PROTOCOLS)
+   *
+   * let q = prompt().role('assistant').$dynamic()
+   * q = withProtocols(q)
+   * ```
+   */
+  $dynamic(): DynamicPromptBuilder {
+    return this
+  }
+
+  /**
    * Render the prompt.
    *
    * @param dialect - Serializer to use. Defaults to markdown. Pass
    *   `markdown({ strict: true })` to reproduce pre-0.3.0 output byte for byte.
+   * @throws MissingParamError if the prompt still has unbound placeholders —
+   *   use `.prepare().render(values)` for those.
    */
   build(dialect: Dialect = markdown()): string {
-    return render(this.nodes, dialect)
+    return render(resolve(this.nodes), dialect)
   }
 
   /**
@@ -1087,17 +1151,49 @@ export class PromptBuilder {
     return [...this.nodes]
   }
 
+  /** Placeholder names this prompt still expects, in first-seen order. */
+  params(): string[] {
+    return paramNames(this.nodes)
+  }
+
+  /**
+   * Compile once, render many times — the `.prepare()` analogue.
+   *
+   * Serializes every static node up front and leaves only the placeholder slots
+   * to fill, which is the whole cost of rebuilding a large system prompt per
+   * request.
+   *
+   * @example
+   * ```typescript
+   * const greeting = prompt().raw(p`Hello ${placeholder('name')}`).prepare('greeting')
+   * greeting.render({ name: 'Ada' })
+   * greeting.render({ name: 'Grace' })
+   * ```
+   */
+  prepare(name = 'prompt', dialect: Dialect = markdown()): PreparedPrompt {
+    return new PreparedPrompt(name, this.nodes, dialect)
+  }
+
   /**
    * Inspect the compiled prompt without committing to a string, mirroring
    * Drizzle's `.toSQL()`.
-   *
-   * `params` is always empty until prepared prompts land; the shape is fixed
-   * now so callers don't have to change later.
    */
   toPrompt(dialect: Dialect = markdown()): PromptQuery {
-    return { text: render(this.nodes, dialect), params: [], dialect: dialect.name }
+    return {
+      text: render(resolve(this.nodes), dialect),
+      params: this.params(),
+      dialect: dialect.name,
+    }
   }
 }
+
+/**
+ * A builder in dynamic mode.
+ *
+ * Structurally identical to `PromptBuilder` — it exists so helper functions can
+ * declare that they take and extend a prompt, the way Drizzle's `PgSelect` does.
+ */
+export type DynamicPromptBuilder = PromptBuilder
 
 /**
  * Create a new PromptBuilder instance
