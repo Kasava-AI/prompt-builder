@@ -515,14 +515,38 @@ One asymmetry to know about: `include()` of an empty builder still leaves an `em
 so strict mode can reproduce §6 row 9, but the combinators drop empty results outright — they are
 new API with no legacy to preserve, and a clean AST matters more for walking and budgeting.
 
-### Phase 3 — Ecosystem (`0.3.0`)
+### Phase 3 — Ecosystem ✅ COMPLETE (`0.3.0`)
 
-- `/presets` subpath: move the five domain generators out, leave deprecated shims (§5.8)
-- `/zod` subpath: `createVarsSchema` (zod as optional peer, core stays zero-dep)
-- `.$budget()` + pluggable token counter
-- `exports` map for `.`, `./presets`, `./zod`; tsup multi-entry
-- README rewrite around the ORM framing
-- **Ship 0.3.0.**
+**466 runtime tests + 25 type tests. 100% coverage across all twelve source files.**
+
+| Deliverable | Where |
+|---|---|
+| `/presets` subpath + deprecated shims | `src/presets.ts` |
+| `/zod` subpath: `createVarsSchema`, typed refinements | `src/zod.ts` |
+| `.priority()` / `.$budget()` + pluggable counter | `src/budget.ts` |
+| `.node()` — the AST escape hatch presets are built on | `src/prompt-builder.ts` |
+| Three-entry build, `exports` map, optional `zod` peer | `tsup.config.ts`, `package.json` |
+| README rewritten around the ORM framing | `README.md` |
+| **Every README example executed as a test** | `test/readme.test.ts` |
+
+Notes from building it:
+
+- **`.node()` fell out of the presets split and is the more useful primitive.** Moving the
+  generators out needed a way to build an arbitrary AST node from outside the class; that turned
+  out to be worth exposing on its own, for custom generators and for content reconstructed from a
+  stored AST.
+- **Core ↔ presets is a deliberate import cycle.** The presets build on `PromptBuilder`, and the
+  deprecated methods delegate to the presets. Usage is confined to function bodies, so evaluation
+  order never matters, and the cycle disappears at 1.0 when the shims go. Verified against the
+  built `dist/`, not just source.
+- **`$budget()` returns a new builder** rather than mutating, unlike the rest of the API. Trimming
+  is a query over the prompt, not a step in building one — and silently mutating a shared fragment
+  because something was over budget would be a nasty surprise.
+- **The README's zod refinement example didn't typecheck.** `Refinements` typed the callback as
+  `z.ZodTypeAny`, so `(s) => s.max(80)` required a cast. Refinements are now typed per variable,
+  and the example works as written. Writing `test/readme.test.ts` is what surfaced it.
+
+**Shipped 0.3.0.** Source-compatible with 0.2.x; no consumer has to change a line.
 
 ### Phase 4 — `prompt-kit` (`0.4.0`, separable)
 

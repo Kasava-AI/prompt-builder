@@ -11,10 +11,15 @@
  * unchanged; `build()` renders with the markdown dialect by default.
  */
 
-import { render, resolve, paramNames, type Dialect, type Node } from './ast'
-import { markdown, renderExampleBlock } from './dialects/markdown'
+import { render, resolve, paramNames, type Dialect, type Node, type Priority } from './ast'
+import { applyBudget, type BudgetOptions } from './budget'
+import { markdown } from './dialects/markdown'
 import { Fragment } from './template'
 import { PreparedPrompt } from './prepared'
+// Deferred cycle: presets builds on PromptBuilder, and the deprecated methods
+// below delegate to presets. Only used inside method bodies, so evaluation order
+// is never an issue.
+import * as presets from './presets'
 
 /** Content accepted anywhere the builder takes prose. */
 export type Content = string | Fragment
@@ -114,8 +119,75 @@ export class PromptBuilder {
   private nodes: Node[] = []
 
   private push(node: Node): this {
-    this.nodes.push(node)
+    this.nodes.push(
+      this.currentPriority === 'normal' ? node : { ...node, priority: this.currentPriority },
+    )
     return this
+  }
+
+  /**
+   * Budget tier applied to nodes pushed from here on.
+   *
+   * Sticky rather than per-call so a whole section can be tiered in one place.
+   */
+  private currentPriority: Priority = 'normal'
+
+  /**
+   * Set the budget tier for everything added after this call.
+   *
+   * Only consulted by `$budget()`; it has no effect on normal rendering.
+   *
+   * @example
+   * ```typescript
+   * prompt()
+   *   .priority('required').include(CORE_RULES)
+   *   .priority('low').include(WORKED_EXAMPLES)
+   *   .$budget({ maxTokens: 8000 })
+   * ```
+   */
+  priority(level: Priority): this {
+    this.currentPriority = level
+    return this
+  }
+
+  /**
+   * Drop the least important content until the prompt fits a token budget.
+   *
+   * The AI-native `LIMIT`, and the one part of this library with no Drizzle
+   * analogue. Returns a NEW builder — unlike the rest of the API, which mutates
+   * — because trimming is a query over the prompt rather than a step in
+   * building it.
+   *
+   * Whole nodes are dropped rather than text truncated, so the result stays
+   * well-formed. `required` nodes never drop; if they alone exceed the budget
+   * this throws rather than quietly returning something over budget.
+   *
+   * @example
+   * ```typescript
+   * const trimmed = prompt()
+   *   .priority('required').include(CORE_RULES)
+   *   .priority('low').include(EXAMPLES)
+   *   .$budget({ maxTokens: 8000, counter: anthropicCounter })
+   * ```
+   */
+  $budget(options: BudgetOptions): PromptBuilder {
+    const dialect = options.dialect ?? markdown()
+    const out = new PromptBuilder()
+    out.nodes = applyBudget(resolve(this.nodes), options, dialect)
+    return out
+  }
+
+  /**
+   * Append a raw AST node.
+   *
+   * The escape hatch for anything the fluent API doesn't cover — custom
+   * generators, node kinds a dialect understands but the builder has no method
+   * for, or content reconstructed from a stored AST. This is what lets the
+   * `/presets` generators live outside the core while still producing the exact
+   * same output.
+   */
+  node(node: Node): this {
+    return this.push(node)
   }
 
   // ============================================
@@ -186,7 +258,16 @@ export class PromptBuilder {
       this.nodes.push({ kind: 'empty', legacy: '' })
       return
     }
-    this.nodes.push(...other.nodes)
+    // Spliced nodes inherit the includer's current tier, but a fragment that set
+    // its own priorities keeps them — otherwise `.priority('low').include(frag)`
+    // would silently ignore the tier the fragment chose for itself.
+    for (const node of other.nodes) {
+      this.nodes.push(
+        this.currentPriority === 'normal' || node.priority !== undefined
+          ? node
+          : { ...node, priority: this.currentPriority },
+      )
+    }
   }
 
   /**
@@ -540,24 +621,16 @@ export class PromptBuilder {
 
   /**
    * Add an analysis requirements section with numbered requirements and optional JSON schema
+   *
+   * @deprecated Moved to `@kasava/prompt-builder/presets`. Use
+   * `.include(analysisRequirements(...))`. Removed in 1.0.
    */
   analysisRequirements(
     description: string,
     requirements: string[],
     jsonStructure?: object
   ): this {
-    this.heading('Analysis Requirements', 2)
-    this.raw(description)
-    if (requirements.length === 0) {
-      this.push({ kind: 'empty', legacy: '' })
-    } else {
-      this.push({ kind: 'list', ordered: true, items: requirements })
-    }
-    if (jsonStructure) {
-      this.raw('Format your response as JSON with the following structure:')
-      this.codeBlock(JSON.stringify(jsonStructure, null, 2), 'json')
-    }
-    return this
+    return this.include(presets.analysisRequirements(description, requirements, jsonStructure))
   }
 
   /**
@@ -755,8 +828,8 @@ export class PromptBuilder {
   /**
    * Add a "follow-through matrix" — action → next-step offer table with a trailing rule.
    *
-   * Generates the same table format as lookupTable but with standard column names
-   * and a mandatory trailing rule about follow-through behavior.
+   * @deprecated Moved to `@kasava/prompt-builder/presets`. Use
+   * `.include(followThroughMatrix(...))`. Removed in 1.0.
    */
   followThroughMatrix(opts: {
     title: string
@@ -764,13 +837,7 @@ export class PromptBuilder {
     rows: Array<{ action: string; followThrough: string }>
     postRule: string
   }): this {
-    return this.lookupTable({
-      title: opts.title,
-      description: opts.description,
-      columns: ['Completed action', 'Follow-through offer'],
-      rows: opts.rows.map((r) => [r.action, r.followThrough]),
-      postNote: opts.postRule,
-    })
+    return this.include(presets.followThroughMatrix(opts))
   }
 
   // ============================================
@@ -932,9 +999,7 @@ export class PromptBuilder {
    * ```
    */
   gracefulDegradation(rules: string[], title = 'Graceful Degradation'): this {
-    this.heading(title, 2)
-    this.list(rules)
-    return this
+    return this.include(presets.gracefulDegradation(rules, title))
   }
 
   /**
@@ -966,11 +1031,7 @@ export class PromptBuilder {
     tools: { tool: string; usage: string }[],
     title = 'Available Tools'
   ): this {
-    return this.lookupTable({
-      title,
-      columns: ['Tool', 'Usage'],
-      rows: tools.map((t) => [t.tool, t.usage]),
-    })
+    return this.include(presets.toolGuidance(tools, title))
   }
 
   /**
@@ -1044,14 +1105,7 @@ export class PromptBuilder {
    * ```
    */
   workedExample(example: WorkedExample): this {
-    return this.push({
-      kind: 'example',
-      context: example.context,
-      mention: example.mention,
-      protocol: example.protocol,
-      toolCalls: example.toolCalls,
-      response: example.response,
-    })
+    return this.include(presets.workedExample(example))
   }
 
   /**
@@ -1069,21 +1123,7 @@ export class PromptBuilder {
    * ```
    */
   workedExamples(examples: WorkedExample[], title = 'Worked Examples'): this {
-    this.heading(title, 2)
-    const blocks = examples.map((ex) => ({
-      context: ex.context,
-      mention: ex.mention,
-      protocol: ex.protocol,
-      toolCalls: ex.toolCalls,
-      response: ex.response,
-    }))
-    return this.push({
-      kind: 'examples',
-      examples: blocks,
-      // v0.2.2 pushed the wrapper tags and each example as separate parts, so
-      // blank lines appeared inside the XML (§6 row 5).
-      legacy: ['<examples>', ...blocks.map(renderExampleBlock), '</examples>'].join('\n\n'),
-    })
+    return this.include(presets.workedExamples(examples, title))
   }
 
   // ============================================

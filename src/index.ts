@@ -52,3 +52,7 @@ export { PreparedPrompt } from './prepared'
 export { MissingParamError, resolve, formatValue, paramNames } from './ast'
 export type { Chunk, Placeholder, TemplateNode, CacheBoundaryNode } from './ast'
 export type { Content, DynamicPromptBuilder } from './prompt-builder'
+
+export { applyBudget, approximateTokens, BudgetExceededError } from './budget'
+export type { BudgetOptions, TokenCounter } from './budget'
+export type { Priority } from './ast'

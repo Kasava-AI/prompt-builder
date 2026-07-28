@@ -16,8 +16,19 @@
  * than collapsing them to one opaque string, so the tree stays walkable.
  */
 
+/**
+ * How readily a node may be dropped to fit a token budget.
+ *
+ * `required` never drops. Everything else goes in order — `low`, then `normal`,
+ * then `high` — last node first within each tier.
+ */
+export type Priority = 'required' | 'high' | 'normal' | 'low'
+
 /** Fields shared by every node. */
 interface NodeBase {
+  /** Budget tier. Defaults to `normal` when unset. See `$budget()`. */
+  priority?: Priority
+
   /**
    * The exact v0.2.2 rendering of this node, as a single part.
    *

@@ -1,7 +1,7 @@
 {
   "name": "@kasava/prompt-builder",
-  "version": "0.3.0-beta.0",
-  "description": "Fluent prompt builder for LLM agents. Composable sections, XML tags, protocols, lookup tables, and consistent markdown formatting.",
+  "version": "0.3.0",
+  "description": "A prompt ORM for TypeScript. Typed variables, a composable template tag, an inspectable AST, and pluggable output dialects.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -11,6 +11,16 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./presets": {
+      "types": "./dist/presets.d.ts",
+      "import": "./dist/presets.js",
+      "default": "./dist/presets.js"
+    },
+    "./zod": {
+      "types": "./dist/zod.d.ts",
+      "import": "./dist/zod.js",
+      "default": "./dist/zod.js"
     }
   },
   "files": [
@@ -39,7 +49,11 @@
     "anthropic",
     "claude",
     "openai",
-    "prompt-engineering"
+    "prompt-engineering",
+    "orm",
+    "prompt-orm",
+    "ast",
+    "typescript"
   ],
   "author": "Kasava <hello@kasava.dev>",
   "license": "MIT",
@@ -53,6 +67,16 @@
     "@vitest/coverage-v8": "^3.2.7",
     "tsup": "^8.0.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
-  }
+    "vitest": "^3.0.0",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "zod": "^3.23.0 || ^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
+  },
+  "sideEffects": false
 }
